@@ -1,0 +1,151 @@
+import pandas as pd
+from transformers import BertTokenizer
+from bs4 import BeautifulSoup
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.layers import Input, Dense, Dropout, Flatten, Embedding, Multiply, Layer
+from tensorflow.keras.models import Model
+from tensorflow.keras.regularizers import l2
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+
+from collections import Counter
+from sklearn.utils.class_weight import compute_class_weight
+
+# Initialize the BERT tokenizer
+tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+
+# Load data from CSV file
+csv_file_path = '/content/data_trial_090924.csv'  # Adjust the file path as needed
+data = pd.read_csv(csv_file_path)
+
+# Extract labels and HTML codes from the CSV
+# **Assuming your CSV has columns 'label' and 'html_code'**
+labels = data['label'].tolist()
+html_codes = data['data'].tolist()
+
+# If your CSV does not have headers, you can use:
+# labels = data.iloc[:, 0].tolist()  # First column contains labels
+# html_codes = data.iloc[:, 1].tolist()  # Second column contains HTML codes
+
+command = "click()"
+
+# Compute class weights after labels are defined
+class_weights = compute_class_weight('balanced', classes=np.unique(labels), y=labels)
+class_weights = dict(enumerate(class_weights))  # Convert to a dictionary for Keras
+
+# Function to preprocess HTML with command
+def preprocess_html_with_command(html_codes, command):
+    input_ids_batch = []
+    attention_mask_batch = []
+
+    for html_code in html_codes:
+        # Parse HTML and extract elements
+        soup = BeautifulSoup(html_code, 'html.parser')
+        elements = []
+        for tag in soup.find_all(True):
+            tag_name = tag.name
+            attrs = tag.attrs
+            text = tag.get_text(strip=True)
+
+            elements.append(tag_name)
+            for attr, value in attrs.items():
+                elements.append(f'{attr}="{value}"')
+            if text:
+                elements.append(text)
+
+        # Append the command
+        elements.append(command)
+
+        # Convert elements to string and tokenize
+        processed_html = " ".join(elements)
+        tokens = tokenizer.tokenize(processed_html)
+        tokens = ['[CLS]'] + tokens + ['[SEP]']
+
+        # Convert tokens to IDs
+        input_ids = tokenizer.convert_tokens_to_ids(tokens)
+        attention_mask = [1] * len(input_ids)
+
+        # Pad or truncate input_ids and attention_mask
+        max_length = 100                #max_length = 500 #max_length = 100 optimized
+        if len(input_ids) > max_length:
+            input_ids = input_ids[:max_length]
+            attention_mask = attention_mask[:max_length]
+        else:
+            padding_length = max_length - len(input_ids)
+            input_ids += [0] * padding_length
+            attention_mask += [0] * padding_length
+
+        input_ids_batch.append(input_ids)
+        attention_mask_batch.append(attention_mask)
+
+    return np.array(input_ids_batch), np.array(attention_mask_batch)
+
+# Preprocess the batch of HTML codes with the command
+input_ids_batch, attention_mask_batch = preprocess_html_with_command(html_codes, command)
+
+# Map unique labels to integers
+unique_labels = sorted(set(labels))
+label_map = {label: idx for idx, label in enumerate(unique_labels)}
+label_ids = [label_map[label] for label in labels]
+
+# One-hot encode labels
+num_classes = len(label_map)
+y_one_hot = tf.keras.utils.to_categorical(label_ids, num_classes=num_classes)
+
+# Split the data into training and validation sets
+from sklearn.model_selection import train_test_split
+X_train_ids, X_val_ids, X_train_mask, X_val_mask, y_train, y_val = train_test_split(
+    input_ids_batch, attention_mask_batch, y_one_hot, test_size=0.2, random_state=42
+)
+
+# Define a custom layer to apply the attention mask
+class MaskedEmbedding(Layer):
+    def __init__(self, **kwargs):
+        super(MaskedEmbedding, self).__init__(**kwargs)
+
+    def call(self, inputs):
+        embedding, attention_mask = inputs
+        return Multiply()([embedding, tf.cast(tf.expand_dims(attention_mask, -1), dtype=tf.float32)])
+#--------------------------------------
+# Define the model with regularization
+def build_regularized_model(max_length, num_classes):
+    input_ids = Input(shape=(max_length,), dtype=tf.int32, name='input_ids')
+    attention_mask = Input(shape=(max_length,), dtype=tf.int32, name='attention_mask')
+
+    embedding = Embedding(input_dim=30522, output_dim=128, name='embedding')(input_ids)
+    masked_output = MaskedEmbedding(name='masked_embedding')([embedding, attention_mask])
+
+    flatten = Flatten()(masked_output)
+    dense1 = Dense(256, activation='relu', kernel_regularizer=l2(0.01))(flatten)
+    dropout1 = Dropout(0.5)(dense1)
+    dense2 = Dense(128, activation='relu', kernel_regularizer=l2(0.01))(dropout1)
+    dropout2 = Dropout(0.5)(dense2)
+    output = Dense(num_classes, activation='softmax')(dropout2)
+
+    model = Model(inputs=[input_ids, attention_mask], outputs=output)
+    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.0001), #learning_rate = 0.0001
+              loss='categorical_crossentropy', metrics=['accuracy'])
+
+    return model
+
+#model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy']) #eski burası
+
+# Implement early stopping and learning rate reduction
+early_stopping = EarlyStopping(monitor='val_loss', patience=2, restore_best_weights=True)
+reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=2, min_lr=0.000001)
+
+# Build and train the model with regularization
+model = build_regularized_model(max_length=100, num_classes=num_classes) #max_length = 500 #max_length = 100 optimized
+history = model.fit(
+    [X_train_ids, X_train_mask],
+    y_train,
+    validation_data=([X_val_ids, X_val_mask], y_val),
+    epochs=100,
+    batch_size=32,
+    callbacks=[early_stopping, reduce_lr],
+    class_weight=class_weights
+)
+
+# Evaluate the model on validation data
+loss, accuracy = model.evaluate([X_val_ids, X_val_mask], y_val)
+print(f"Validation Loss: {loss}, Validation Accuracy: {accuracy}")
