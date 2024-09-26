@@ -1,0 +1,63 @@
+#predict etmesi için olan kod
+
+from bs4 import BeautifulSoup
+
+#new_html_code = """<button type="button" class="btn btn-primary" id="action-button" name="submit-btn">Click Me!</button>"""    # id örnek
+#new_html_code = """<button type="button" class="close-dialog-window" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">×</span></button>""" #class örnek
+#new_html_code = """<button class="back-to-home" id="home-button" aria-label="Go to Home"><span class="home-icon"></span></button>""" #id örnek
+new_html_code = """<button class="confirm-btn" name="confirm-data">Confirm Data</button>""" # name örnek
+
+new_input_ids, new_attention_mask = preprocess_html_with_command([new_html_code], command)
+
+prediction = model.predict([new_input_ids, new_attention_mask])
+predicted_class_index = np.argmax(prediction, axis=1)[0]
+
+# Map back the predicted class to the label
+idx_to_label = {idx: label for label, idx in label_map.items()}
+predicted_label = idx_to_label[predicted_class_index]
+
+print(f"Predicted Class Index: {predicted_class_index}")
+print(f"Predicted Label: {predicted_label}")
+
+# For debugging: Check distribution of your labels
+print("Label Distribution:", Counter(labels))
+
+# For debugging: Print label_map
+print("Label Map:", label_map)
+
+#-------------------------------------------------
+
+# Parse the HTML using BeautifulSoup
+soup = BeautifulSoup(new_html_code, 'html.parser')
+
+# Extract values for id, name, and class attributes
+
+# Function to find the first element with a specific attribute
+def find_element_by_attribute(attribute):
+    elements_with_attr = soup.find_all(attrs={attribute: True})
+    if elements_with_attr:
+        return elements_with_attr[0][attribute]
+    return None
+
+# Extract the first id, name, and class attribute values from the HTML
+predicted_id_value = find_element_by_attribute("id")
+predicted_name_value = find_element_by_attribute("name")
+predicted_class_value = find_element_by_attribute("class")
+
+#Bulduğumuz değerleri birleştirme
+print(f"Predicted Label: {predicted_label}")
+
+if predicted_label=="id":
+    print(f'Predicted ID value: {predicted_id_value}')
+    print(f'Predicted locator: {predicted_label} = "{predicted_id_value}"') #bulduğu id'i printleme
+
+elif predicted_label=="class":
+    print(f'Predicted Class value: {predicted_class_value}')
+    print(f'Predicted locator: {predicted_label} = "{predicted_class_value[0]}"') #bulduğu class'ı printleme
+
+elif predicted_label=="name":
+    print(f'Predicted Name value: {predicted_name_value}')
+    print(f'Predicted locator: {predicted_label} = "{predicted_name_value}"') #bulduğu name'i printleme
+
+else:
+    print('No element with an attribute found.')
